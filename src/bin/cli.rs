@@ -137,14 +137,16 @@ async fn repl(host: &str) -> Result<()> {
                     }
                     continue;
                 }
+                let blank = line.trim().is_empty();
                 buffer.push_str(&line);
                 buffer.push('\n');
-                // Точка с запятой не обязательна: одиночная строка выполняется
-                // по Enter, многострочный ввод — по `;`.
-                if !is_complete(&buffer) && line.trim_end().ends_with(',') {
-                    continue;
-                }
-                if !is_complete(&buffer) && !line.trim().is_empty() && needs_more(&buffer) {
+                // Запрос выполняется по `;` — как в psql, mysql и sqlite. Раньше
+                // здесь была догадка «строка без запятой и без открытой скобки,
+                // значит запрос кончился», и на ней рвался обычный многострочный
+                // `SELECT a, b` / `FROM t`: синтаксически первая строка цельная,
+                // и отличить её от незаконченной нельзя ничем, кроме `;`.
+                // Пустая строка — запасной выход, чтобы не застрять без `;`.
+                if !is_complete(&buffer) && !blank {
                     continue;
                 }
                 let stmt = buffer.trim().trim_end_matches(';').to_string();
@@ -174,21 +176,6 @@ async fn repl(host: &str) -> Result<()> {
     }
     let _ = rl.save_history(&history);
     Ok(())
-}
-
-/// Ввод продолжается, если открыта скобка или строковый литерал.
-fn needs_more(buf: &str) -> bool {
-    let mut depth = 0i32;
-    let mut in_str = false;
-    for c in buf.chars() {
-        match c {
-            '\'' => in_str = !in_str,
-            '(' if !in_str => depth += 1,
-            ')' if !in_str => depth -= 1,
-            _ => {}
-        }
-    }
-    in_str || depth > 0
 }
 
 fn is_ddl(sql: &str) -> bool {
@@ -243,6 +230,8 @@ async fn meta(
              \\snapshot        сбросить состояние на диск\n\
              \\refresh         перечитать схему для автодополнения\n\
              \\q               выход\n\
+             \n\
+             Запрос выполняется по `;`. Пустая строка тоже выполняет введённое.\n\
              Tab — автодополнение, Ctrl-C — сбросить ввод."
         ),
         other => println!("неизвестная команда '{other}', см. \\help"),

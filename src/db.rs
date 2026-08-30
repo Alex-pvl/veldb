@@ -354,13 +354,16 @@ impl Database {
                 let n = self.insert_rows(&table, &rows)?;
                 Ok(QueryResult::message(&format!("вставлено строк: {n}")))
             }
-            Statement::Select(plan) => {
-                let t = self
-                    .table(&plan.table)
-                    .ok_or_else(|| anyhow!("таблица '{}' не найдена", plan.table))?;
-                let t = t.read().unwrap();
-                run_select(&plan, &t)
-            }
+            Statement::Select(plan) => match &plan.table {
+                None => run_select(&plan, None),
+                Some(name) => {
+                    let t = self
+                        .table(name)
+                        .ok_or_else(|| anyhow!("таблица '{name}' не найдена"))?;
+                    let t = t.read().unwrap();
+                    run_select(&plan, Some(&t))
+                }
+            },
             Statement::ShowTables => Ok(QueryResult {
                 columns: vec!["name".into(), "rows".into()],
                 types: vec![DataType::Str, DataType::I64],

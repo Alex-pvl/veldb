@@ -1,8 +1,11 @@
 [package]
 name = "veldb"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.85"
+license = "MIT"
+description = "In-memory колоночная СУБД под ARM с векторным поиском"
+repository = "https://github.com/Alex-pvl/veldb"
 
 [lib]
 name = "veldb"

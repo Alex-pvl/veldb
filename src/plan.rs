@@ -283,7 +283,8 @@ pub struct OrderKey {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Select {
-    pub table: String,
+    /// `None` — запрос без FROM (`SELECT 1`): источником служит одна пустая строка.
+    pub table: Option<String>,
     pub filter: Option<Expr>,
     pub group_by: Vec<Expr>,
     /// Фильтр по результату агрегации. Считается после группировки, до сортировки.

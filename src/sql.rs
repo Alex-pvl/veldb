@@ -257,16 +257,25 @@ fn plan_query(q: sa::Query, catalog: &dyn Catalog) -> Result<Select> {
     if select.distinct.is_some() {
         bail!("SELECT DISTINCT не поддерживается; используйте GROUP BY");
     }
-    if select.from.len() != 1 || !select.from[0].joins.is_empty() {
-        bail!("поддерживается ровно одна таблица в FROM, без JOIN");
+    if select.from.len() > 1 || select.from.first().is_some_and(|f| !f.joins.is_empty()) {
+        bail!("поддерживается не больше одной таблицы в FROM, без JOIN");
     }
-    let table = match &select.from[0].relation {
-        sa::TableFactor::Table { name, .. } => ident_of(name)?,
-        other => bail!("источник '{other}' не поддерживается"),
+    // FROM может не быть вовсе: `SELECT 1`, `SELECT 2 + 2`. Источником тогда служит
+    // одна пустая строка — так это работает во всех знакомых SQL-движках, и на таком
+    // запросе принято проверять, что сервер вообще жив.
+    let (table, schema) = match select.from.first() {
+        None => (None, Schema::default()),
+        Some(from) => {
+            let name = match &from.relation {
+                sa::TableFactor::Table { name, .. } => ident_of(name)?,
+                other => bail!("источник '{other}' не поддерживается"),
+            };
+            let schema = catalog
+                .schema_of(&name)
+                .ok_or_else(|| anyhow!("таблица '{name}' не найдена"))?;
+            (Some(name), schema)
+        }
     };
-    let schema = catalog
-        .schema_of(&table)
-        .ok_or_else(|| anyhow!("таблица '{table}' не найдена"))?;
 
     let filter = select
         .selection

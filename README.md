@@ -1,5 +1,7 @@
 # veldb
 
+**https://github.com/alex-pvl/veldb**
+
 In-memory колоночная СУБД под ARM: векторный поиск, снапшоты на диск, репликация,
 HTTP/gRPC/CLI. Целевые платформы — Apple silicon и Raspberry Pi 4/5 (64-битная ОС).
 
@@ -13,6 +15,8 @@ HTTP/gRPC/CLI. Целевые платформы — Apple silicon и Raspberry 
 - [Сборка](#сборка)
 - [Быстрый старт](#быстрый-старт)
 - [Запуск сервера](#запуск-сервера)
+- [Docker](#docker)
+- [Релизы](#релизы)
 - [CLI: veldbctl](#cli-veldbctl)
 - [SQL](#sql)
 - [Векторный поиск](#векторный-поиск)
@@ -32,7 +36,8 @@ HTTP/gRPC/CLI. Целевые платформы — Apple silicon и Raspberry 
 | | |
 |---|---|
 | Rust | 1.85+ (`rustup update`) |
-| `protoc` | для gRPC-кодогенерации: `brew install protobuf` / `apt install protobuf-compiler` |
+| `protoc` | обязателен: `build.rs` генерирует gRPC-код. `brew install protobuf` / `sudo apt install -y protobuf-compiler` |
+| Компилятор C | `build-essential` на Debian-подобных: нужен для `psm` (защита парсера от переполнения стека) |
 | Архитектура | aarch64 (Apple silicon, Pi 4/5 на 64-битной ОС) или x86-64 — на не-ARM собирается, но без NEON, на скалярном пути |
 
 Опционально, только для примеров: `jq` (форматирование JSON), `grpcurl` (gRPC из консоли).
@@ -40,7 +45,7 @@ HTTP/gRPC/CLI. Целевые платформы — Apple silicon и Raspberry 
 ## Сборка
 
 ```bash
-git clone <репозиторий> && cd veldb
+git clone https://github.com/alex-pvl/veldb.git && cd veldb
 cargo build --release
 ```
 
@@ -95,7 +100,7 @@ cargo build
 ```
 
 ```
-veldb 0.1.0: таблиц 0, строк 0, хранилище ./data
+veldb 1.0.0: таблиц 0, строк 0, хранилище ./data
 HTTP  http://127.0.0.1:8080
 gRPC  http://127.0.0.1:8081
 ```
@@ -131,6 +136,86 @@ gRPC  http://127.0.0.1:8081
 
 Готовый systemd-юнит — `deploy/veldb.service`.
 
+## Docker
+
+Готовый образ (собирается по тегу, см. `.github/workflows/release.yml`):
+
+```bash
+docker run -d --name veldb \
+    -p 8080:8080 -p 8081:8081 \
+    -v veldb-data:/var/lib/veldb \
+    --memory 4g \
+    ghcr.io/alex-pvl/veldb:latest \
+    --data /var/lib/veldb --http 0.0.0.0:8080 --grpc 0.0.0.0:8081 --max-memory 3GiB
+```
+
+Образ мультиархитектурный: `linux/amd64` и `linux/arm64` — на Raspberry Pi тот же тег.
+
+`--max-memory` держите ниже `--memory` контейнера (запас ~1 ГиБ): иначе лимит cgroup
+сработает раньше, и процесс убьёт OOM-killer вместо внятной ошибки на вставке.
+
+Сборка из исходников:
+
+```bash
+docker build -t veldb .          # Dockerfile — многоступенчатая сборка с кэшем зависимостей
+docker run --rm -p 8080:8080 veldb
+```
+
+Внутри образа:
+
+| | |
+|---|---|
+| Порты | `8080` (HTTP), `8081` (gRPC) |
+| Том | `/var/lib/veldb` — снапшот и WAL |
+| Пользователь | `veldb`, не root |
+| `HEALTHCHECK` | `veldbctl -e "SELECT 1"` — собственным клиентом, `curl` в образе нет |
+
+Docker Compose с репликой:
+
+```yaml
+services:
+  primary:
+    image: ghcr.io/alex-pvl/veldb:latest
+    command: ["--data","/var/lib/veldb","--http","0.0.0.0:8080","--grpc","0.0.0.0:8081","--max-memory","3GiB"]
+    ports: ["8080:8080", "8081:8081"]
+    volumes: ["primary-data:/var/lib/veldb"]
+  replica:
+    image: ghcr.io/alex-pvl/veldb:latest
+    command: ["--data","/var/lib/veldb","--http","0.0.0.0:8080","--replicate-from","primary:8080","--max-memory","3GiB"]
+    ports: ["8090:8080"]
+    volumes: ["replica-data:/var/lib/veldb"]
+    depends_on: [primary]
+volumes:
+  primary-data:
+  replica-data:
+```
+
+## Релизы
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+Дальше `.github/workflows/release.yml` сам:
+
+1. собирает и **прогоняет тесты** на четырёх нативных раннерах — `aarch64-apple-darwin`,
+   `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`;
+2. кладёт в релиз `.tar.gz` с тремя бинарниками и `.sha256` рядом;
+3. публикует мультиарх-образ в `ghcr.io/alex-pvl/veldb`.
+
+Две вещи, которые стоит знать заранее:
+
+- Linux-сборки идут на **Ubuntu 22.04** (glibc 2.35), а не 24.04. Бинарник, собранный
+  на 24.04 (glibc 2.39), не запустится на Raspberry Pi OS bookworm — там glibc 2.36.
+  Если нужен ещё и Debian bullseye (glibc 2.31), собирайте под
+  `aarch64-unknown-linux-musl`: статический бинарник поедет везде, но аллокатор musl
+  заметно медленнее на многопоточной нагрузке — для СУБД это не бесплатно.
+- Пакет в GHCR по умолчанию **приватный**. После первой публикации откройте его:
+  *Packages → veldb → Package settings → Change visibility → Public*.
+
+Проверить сборку, не создавая тег: вкладка Actions → release → Run workflow.
+Артефакты появятся в прогоне, релиз и образ при этом не публикуются.
+
 ## CLI: veldbctl
 
 ```bash
@@ -155,7 +240,15 @@ gRPC  http://127.0.0.1:8081
 | `\refresh` | перечитать схему для автодополнения |
 | `\q` | выход |
 
-Многострочный ввод продолжается, пока открыта скобка или кавычка; завершается `;`.
+Запрос выполняется по `;` — как в psql, mysql и sqlite. Пока `;` нет, клиент
+показывает `    -> ` и ждёт продолжения; пустая строка тоже выполняет введённое,
+чтобы не застрять:
+
+```
+veldb> SELECT city, count(*) AS c
+    ->   FROM sales
+    ->  GROUP BY city;
+```
 
 Скрипт из файла:
 
@@ -358,7 +451,7 @@ curl -s -X POST 127.0.0.1:8080/query -H 'content-type: application/json' \
 curl -s 127.0.0.1:8080/health | jq -c
 ```
 ```json
-{"bytes_used":136,"next_lsn":3,"persistent":true,"rows":3,"status":"ok","tables":1,"version":"0.1.0"}
+{"bytes_used":136,"next_lsn":3,"persistent":true,"rows":3,"status":"ok","tables":1,"version":"1.0.0"}
 ```
 
 Значения возвращаются обычными скалярами JSON, а не размеченным перечислением:
@@ -377,7 +470,7 @@ grpcurl -plaintext -proto proto/veldb.proto -import-path proto \
     127.0.0.1:8081 veldb.Veldb/Health
 ```
 ```json
-{ "version": "0.1.0", "tables": "1", "rows": "3", "bytesUsed": "136",
+{ "version": "1.0.0", "tables": "1", "rows": "3", "bytesUsed": "136",
   "nextLsn": "3", "persistent": true }
 ```
 
@@ -433,7 +526,7 @@ protoc -I proto --go_out=. --go-grpc_out=. proto/veldb.proto
 ```
 
 ```
-veldb 0.1.0: таблиц 0, строк 0, хранилище /var/lib/veldb-replica
+veldb 1.0.0: таблиц 0, строк 0, хранилище /var/lib/veldb-replica
 режим реплики: первичный узел 127.0.0.1:8080
 HTTP  http://127.0.0.1:8090
 gRPC  http://127.0.0.1:8091
@@ -546,7 +639,8 @@ OOM-killer'ом, с ним вставка получает внятную оши
 
 ```bash
 ./check.sh                      # fmt + clippy -D warnings + все тесты
-cargo test                      # 95 тестов
+cargo test                      # 114 тестов
+cargo test --test functional    # сквозные: поднимают реальные veldb и veldbctl
 cargo test --test sql           # один файл
 cargo test --test vector -- --nocapture
 ```
@@ -566,13 +660,21 @@ src/
   client.rs cli.rs        HTTP-клиент и логика CLI
   replication.rs          догон реплики
   bin/{server,cli,bench}.rs
-tests/                    по файлу на модуль
+tests/
+  functional.rs           сквозные: запускают настоящие процессы veldb и veldbctl
+  остальные               по файлу на модуль, напрямую с библиотекой
 bench/                    схема hits, 43 запроса, отчёты
 ```
 
 Каждый модуль закрыт тестами в своём файле, включая неприятные случаи: обрыв WAL
 на середине кадра, битый CRC, паритет NEON и скаляра, KNN против честного перебора,
 сходимость реплики.
+
+`tests/functional.rs` стоит отдельно: он поднимает настоящий процесс сервера и дёргает
+его настоящим `veldbctl` — через `-e`, через `-f`, через REPL с пайпом на stdin, — а
+также по HTTP и gRPC. Библиотечные тесты этот слой не покрывают: их писал тот же
+человек, что и движок, и они повторяют его предположения. Именно здесь нашлись
+неработающий `SELECT 1` и обрыв многострочного ввода в REPL.
 
 ## Ограничения
 
@@ -588,3 +690,7 @@ bench/                    схема hits, 43 запроса, отчёты
 - Только little-endian платформы (проверяется при открытии файлов).
 
 План работ и статус по фазам — [PLAN.md](PLAN.md).
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).

@@ -1,0 +1,174 @@
+name: release
+
+# Релиз собирается по тегу: git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ["v*"]
+  # Ручной запуск — чтобы проверить сборку, не создавая тег.
+  workflow_dispatch:
+
+permissions:
+  contents: write # заливка артефактов в релиз
+  packages: write # публикация образа в GHCR
+
+jobs:
+  binaries:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ARM собирается на нативных ARM-раннерах. Кросс-компиляция здесь не
+          # вариант: sqlparser тянет psm, а он требует кросс-компилятор C.
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          # Именно 22.04, а не 24.04: у 24.04 glibc 2.39, и такой бинарник не
+          # запустится на Raspberry Pi OS bookworm (glibc 2.36). 22.04 даёт 2.35 —
+          # работает и на bookworm, и на Ubuntu 22.04+.
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: x86_64-apple-darwin
+            runner: macos-13
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: protoc
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install protobuf
+          else
+            sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Тесты гоняются на тех же раннерах, что и сборка: релизный бинарник, который
+      # никто не прогонял на своей платформе, — это обещание, а не артефакт.
+      - name: test
+        run: cargo test --release --locked --target ${{ matrix.target }}
+
+      - name: build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="veldb-${GITHUB_REF_NAME:-dev}-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          cd "target/${{ matrix.target }}/release"
+          strip veldb veldbctl veldb-bench
+          cd -
+          cp target/${{ matrix.target }}/release/veldb "dist/$NAME/"
+          cp target/${{ matrix.target }}/release/veldbctl "dist/$NAME/"
+          cp target/${{ matrix.target }}/release/veldb-bench "dist/$NAME/"
+          cp README.md PLAN.md LICENSE "dist/$NAME/"
+          cp -r bench "dist/$NAME/bench"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          # Контрольная сумма рядом с артефактом: без неё скачавшему нечем проверить,
+          # что он получил именно то, что собрал CI.
+          cd dist && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz*
+
+  publish:
+    name: github release
+    needs: binaries
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # gh предустановлен на раннерах — сторонний action для загрузки файлов не нужен.
+      - name: upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*
+
+  image:
+    name: ghcr image
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # Раскладываем бинарники по каталогам, которые ждёт docker/Dockerfile.dist:
+      # он выбирает нужный по TARGETPLATFORM, поэтому компилировать под эмуляцией
+      # не приходится вовсе.
+      - name: разложить по платформам
+        run: |
+          set -euo pipefail
+          mkdir -p dist/linux/amd64 dist/linux/arm64
+          for tgz in artifacts/*.tar.gz; do
+            case "$tgz" in
+              *aarch64-unknown-linux-gnu*) out=dist/linux/arm64 ;;
+              *x86_64-unknown-linux-gnu*)  out=dist/linux/amd64 ;;
+              *) continue ;;                 # macOS-сборки в образ не идут
+            esac
+            tar -xzf "$tgz" -C "$out" --strip-components=1 \
+              --wildcards '*/veldb' '*/veldbctl' '*/veldb-bench'
+          done
+          ls -l dist/linux/amd64 dist/linux/arm64
+
+      # QEMU нужен только под один `useradd` в базовом образе — это доли секунды,
+      # а не сборка Rust.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Имя образа обязано быть в нижнем регистре: реестр не примет
+      # ghcr.io/Alex-pvl/veldb, а github.repository отдаёт логин как есть.
+      - id: repo
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.repo.outputs.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # Ручной запуск тегов не даёт; без этого metadata-action отдаёт пустой
+            # список и сборка образа падает на «нечего тегировать».
+            type=raw,value=dev,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.dist
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

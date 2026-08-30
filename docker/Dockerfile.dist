@@ -1,0 +1,32 @@
+# Образ из уже собранных бинарников.
+#
+# Компиляции здесь нет намеренно: бинарники под каждую архитектуру собираются
+# нативными раннерами в задаче `binaries`, а сборка Rust под arm64 через QEMU
+# заняла бы десятки минут вместо секунд. Собирать из исходников — ../Dockerfile.
+#
+# Ожидаемая раскладка контекста:
+#   dist/linux/amd64/{veldb,veldbctl,veldb-bench}
+#   dist/linux/arm64/{veldb,veldbctl,veldb-bench}
+
+FROM debian:bookworm-slim
+
+ARG TARGETPLATFORM
+
+RUN useradd --system --create-home --home-dir /var/lib/veldb --shell /usr/sbin/nologin veldb
+
+COPY dist/${TARGETPLATFORM}/ /usr/local/bin/
+COPY bench /opt/veldb/bench
+RUN chmod 0755 /usr/local/bin/veldb /usr/local/bin/veldbctl /usr/local/bin/veldb-bench
+
+USER veldb
+WORKDIR /var/lib/veldb
+VOLUME ["/var/lib/veldb"]
+EXPOSE 8080 8081
+
+# Проверка живости — собственным клиентом: curl в образ ради этого не тащим.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["veldbctl", "-e", "SELECT 1"]
+
+# 0.0.0.0, а не 127.0.0.1 по умолчанию: внутри контейнера localhost снаружи недостижим.
+ENTRYPOINT ["veldb"]
+CMD ["--data", "/var/lib/veldb", "--http", "0.0.0.0:8080", "--grpc", "0.0.0.0:8081"]

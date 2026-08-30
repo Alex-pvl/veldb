@@ -458,3 +458,27 @@ fn parallel_aggregate_path_gives_the_same_answers_as_serial() {
         assert_eq!(line, &want);
     }
 }
+
+#[test]
+fn select_without_from_uses_a_single_synthetic_row() {
+    let db = Database::new();
+    assert_eq!(q(&db, "SELECT 1"), ["1"]);
+    assert_eq!(q(&db, "SELECT 2 + 2 AS four"), ["4"]);
+    assert_eq!(
+        q(&db, "SELECT upper('привет'), length('привет')"),
+        ["ПРИВЕТ|6"]
+    );
+    assert_eq!(q(&db, "SELECT count(*)"), ["1"]);
+    assert_eq!(q(&db, "SELECT 1 WHERE 1 = 1"), ["1"]);
+    assert!(q(&db, "SELECT 1 WHERE 1 = 0").is_empty());
+    assert_eq!(q(&db, "SELECT if(1 > 0, 'да', 'нет')"), ["да"]);
+    // Колонок нет — значит и ссылаться не на что; ошибка должна быть понятной.
+    assert!(err(&db, "SELECT x").contains("нет колонки 'x'"));
+}
+
+#[test]
+fn from_clause_still_rejects_joins_and_extra_tables() {
+    let db = shop();
+    assert!(err(&db, "SELECT * FROM sales, sales").contains("не больше одной таблицы"));
+    assert!(err(&db, "SELECT * FROM sales JOIN sales ON 1 = 1").contains("не больше одной таблицы"));
+}

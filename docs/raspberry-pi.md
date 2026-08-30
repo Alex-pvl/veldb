@@ -13,9 +13,58 @@
 
 ## Требования
 
-- Raspberry Pi 4 или 5, **64-битная** ОС (`uname -m` должен показывать `aarch64`).
-  На 32-битной сборки не будет: код опирается на 64-битные указатели и NEON из aarch64.
-- Rust 1.85+.
+- Raspberry Pi 4 или 5, **64-битная** ОС. Проверьте:
+
+  ```bash
+  uname -m     # должно быть aarch64, а не armv7l
+  ```
+
+  На 32-битной ОС сборки не будет: код опирается на 64-битные указатели и NEON из aarch64.
+  Kali, Raspberry Pi OS и Ubuntu for Pi выпускаются в обоих вариантах, и 32-битный
+  ставится по недосмотру чаще, чем хотелось бы.
+
+- Rust 1.85+ и зависимости сборки:
+
+  ```bash
+  sudo apt update
+  sudo apt install -y protobuf-compiler build-essential pkg-config
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+
+  | Пакет | Зачем |
+  |---|---|
+  | `protobuf-compiler` | `build.rs` генерирует gRPC-код из `proto/veldb.proto` |
+  | `build-essential` | компилятор C для `psm` (защита SQL-парсера от переполнения стека на вложенных скобках) |
+
+## Сборка прямо на Pi
+
+```bash
+git clone https://github.com/alex-pvl/veldb.git && cd veldb
+cargo build --release
+```
+
+10-20 минут на Pi 4. **На Pi с 4 ГБ сборка может упасть по памяти**: релизный профиль
+собран с `lto = "fat"` и `codegen-units = 1`, и линковка съедает несколько гигабайт.
+
+Если увидели `signal: 9, SIGKILL` или `collect2: fatal error: ld terminated` — это оно.
+Два способа:
+
+```bash
+# 1. ослабить LTO только для этой сборки (бинарник процентов на 5-10 медленнее)
+CARGO_PROFILE_RELEASE_LTO=thin \
+CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+cargo build --release -j2
+
+# 2. или дать swap и собрать полноценно
+sudo dphys-swapfile swapoff
+sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=4096/' /etc/dphys-swapfile
+sudo dphys-swapfile setup && sudo dphys-swapfile swapon
+cargo build --release
+```
+
+Swap на SD-карте медленный и изнашивает её, поэтому второй способ — для разового
+случая. Регулярно пересобирать лучше с `thin`, а ещё лучше — брать готовый бинарник
+из релиза (`aarch64-unknown-linux-gnu`) и не собирать на Pi вовсе.
 
 ## Сколько данных влезет
 

@@ -718,19 +718,25 @@ pub fn render(v: &Value) -> String {
 
 // --- выполнение SELECT ------------------------------------------------------
 
-pub fn run_select(plan: &Select, table: &Table) -> Result<QueryResult> {
-    let base = Frame::of_table(table);
+/// `table` = `None` для запроса без FROM: кадр без колонок и ровно одна строка,
+/// чтобы константное выражение дало одну строку результата, а не ноль.
+pub fn run_select(plan: &Select, table: Option<&Table>) -> Result<QueryResult> {
+    let base = match table {
+        Some(t) => Frame::of_table(t),
+        None => Frame { cols: Vec::new() },
+    };
+    let nrows = table.map_or(1, |t| t.nrows());
     let sel = match &plan.filter {
-        None => Sel::All(table.nrows()),
+        None => Sel::All(nrows),
         Some(f) => {
-            let mask = eval(f, &base, &Sel::All(table.nrows()))?;
+            let mask = eval(f, &base, &Sel::All(nrows))?;
             let mask = mask
                 .as_bool()
                 .context("WHERE должен давать логическое значение")?;
             if mask.len() == 1 {
                 // Константное условие: либо всё, либо ничего.
                 if mask[0] != 0 {
-                    Sel::All(table.nrows())
+                    Sel::All(nrows)
                 } else {
                     Sel::Ids(Vec::new())
                 }
