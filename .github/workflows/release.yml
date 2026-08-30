@@ -30,8 +30,9 @@ jobs:
             runner: ubuntu-22.04-arm
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
-          - target: x86_64-apple-darwin
-            runner: macos-13
+          # Intel-макам сборку не делаем: раннеры macos-13 сняты с выдачи, джоба
+          # висит в очереди вечно и блокирует публикацию всего релиза. Проект
+          # ARM-first, а x86-путь всё равно проверяется на x86_64-unknown-linux-gnu.
 
     steps:
       - uses: actions/checkout@v4
@@ -100,11 +101,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            dist/*
+          set -euo pipefail
+          # Релиз мог остаться от предыдущего прогона того же тега: create тогда
+          # падает, и артефакты не доезжают. Создаём, если его нет, и в любом
+          # случае заливаем файлы поверх.
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber dist/*
 
   image:
     name: ghcr image

@@ -38,51 +38,80 @@ struct Server {
 impl Server {
     fn start(extra: &[&str]) -> Server {
         let tmp = tempfile::tempdir().unwrap();
-        Server::start_in(tmp.path().to_path_buf(), Some(tmp), extra)
+        let dir = tmp.path().to_path_buf();
+        Server::start_in(dir, Some(tmp), extra)
     }
 
     /// Запуск в заранее известном каталоге — нужен, чтобы перезапустить сервер
     /// поверх тех же данных и проверить восстановление.
+    ///
+    /// С повтором попыток: между «узнали свободный порт» и «сервер его занял»
+    /// есть окно, в которое на нагруженной машине успевает влезть кто-то ещё.
+    /// На ноутбуке это микросекунды, на раннере CI — нет: релиз 1.0.0 упал
+    /// ровно на `Address already in use`.
     fn start_in(dir: PathBuf, tmp: Option<tempfile::TempDir>, extra: &[&str]) -> Server {
-        let (http, grpc) = (free_port(), free_port());
-        let log = dir.join(format!("server-{http}.log"));
-        let out = std::fs::File::create(&log).unwrap();
-        let err = out.try_clone().unwrap();
+        let mut tmp = tmp;
+        let mut last = String::new();
+        for attempt in 1..=5 {
+            match Server::try_start(&dir, extra) {
+                Ok((child, http, grpc, log)) => {
+                    return Server {
+                        child,
+                        http,
+                        grpc,
+                        dir,
+                        log,
+                        _tmp: tmp.take(),
+                    }
+                }
+                Err(e) => {
+                    last = format!("попытка {attempt}: {e}");
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        panic!("сервер не запустился за 5 попыток. Последняя — {last}");
+    }
 
-        let child = Command::new(env!("CARGO_BIN_EXE_veldb"))
+    #[allow(clippy::type_complexity)]
+    fn try_start(
+        dir: &std::path::Path,
+        extra: &[&str],
+    ) -> Result<(Child, String, String, PathBuf), String> {
+        let (http_port, grpc_port) = (free_port(), free_port());
+        let log = dir.join(format!("server-{http_port}.log"));
+        let out = std::fs::File::create(&log).map_err(|e| e.to_string())?;
+        let err = out.try_clone().map_err(|e| e.to_string())?;
+
+        let mut child = Command::new(env!("CARGO_BIN_EXE_veldb"))
             .args(["--data", dir.to_str().unwrap()])
-            .args(["--http", &format!("127.0.0.1:{http}")])
-            .args(["--grpc", &format!("127.0.0.1:{grpc}")])
+            .args(["--http", &format!("127.0.0.1:{http_port}")])
+            .args(["--grpc", &format!("127.0.0.1:{grpc_port}")])
             .args(extra)
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err))
             .spawn()
-            .expect("не удалось запустить veldb");
+            .map_err(|e| format!("не удалось запустить veldb: {e}"))?;
 
-        let s = Server {
-            child,
-            http: format!("127.0.0.1:{http}"),
-            grpc: format!("127.0.0.1:{grpc}"),
-            dir,
-            log,
-            _tmp: tmp,
-        };
-        s.wait_ready();
-        s
-    }
-
-    fn wait_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            if std::net::TcpStream::connect(&self.http).is_ok() {
-                return;
+        let http = format!("127.0.0.1:{http_port}");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            // Занятый порт роняет процесс: ловим это сразу, а не по таймауту.
+            if let Ok(Some(status)) = child.try_wait() {
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                return Err(format!("процесс вышел с {status}: {}", text.trim()));
+            }
+            if std::net::TcpStream::connect(&http).is_ok() {
+                return Ok((child, http, format!("127.0.0.1:{grpc_port}"), log));
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                return Err(format!("не поднялся за 30 с: {}", text.trim()));
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        panic!(
-            "сервер не поднялся за 20 с. Его вывод:\n{}",
-            self.log_text()
-        );
     }
 
     fn log_text(&self) -> String {

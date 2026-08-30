@@ -198,8 +198,8 @@ git tag v1.0.0 && git push origin v1.0.0
 
 Дальше `.github/workflows/release.yml` сам:
 
-1. собирает и **прогоняет тесты** на четырёх нативных раннерах — `aarch64-apple-darwin`,
-   `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`;
+1. собирает и **прогоняет тесты** на трёх нативных раннерах — `aarch64-apple-darwin`
+   (Apple silicon), `aarch64-unknown-linux-gnu` (Raspberry Pi), `x86_64-unknown-linux-gnu`;
 2. кладёт в релиз `.tar.gz` с тремя бинарниками и `.sha256` рядом;
 3. публикует мультиарх-образ в `ghcr.io/alex-pvl/veldb`.
 
@@ -210,6 +210,9 @@ git tag v1.0.0 && git push origin v1.0.0
   Если нужен ещё и Debian bullseye (glibc 2.31), собирайте под
   `aarch64-unknown-linux-musl`: статический бинарник поедет везде, но аллокатор musl
   заметно медленнее на многопоточной нагрузке — для СУБД это не бесплатно.
+- Сборки для Intel-маков нет: раннеры `macos-13` сняты с выдачи, и такая джоба
+  висит в очереди, блокируя публикацию всего релиза. Проект ARM-first, а x86-путь
+  проверяется на `x86_64-unknown-linux-gnu`.
 - Пакет в GHCR по умолчанию **приватный**. После первой публикации откройте его:
   *Packages → veldb → Package settings → Change visibility → Public*.
 
