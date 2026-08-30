@@ -1,0 +1,58 @@
+[package]
+name = "veldb"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+name = "veldb"
+path = "src/lib.rs"
+
+[[bin]]
+name = "veldb"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "veldb-bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "veldbctl"
+path = "src/bin/cli.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+clap = { version = "4.6.6", features = ["derive"] }
+http-body-util = "0.1.5"
+hyper = { version = "1.11.1", features = ["client", "http1"] }
+hyper-util = { version = "0.1.20", features = ["client-legacy", "http1", "tokio"] }
+prost = "0.14.4"
+rayon = "1.12.0"
+rustc-hash = "2.1.3"
+rustyline = "18.0.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sqlparser = "0.62.0"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "sync", "time", "signal"] }
+tonic = "0.14.5"
+tonic-prost = "0.14.5"
+tower = { version = "0.5.3", features = ["util"] }
+
+[dev-dependencies]
+rand = "0.10.2"
+tempfile = "3.27.0"
+tokio-stream = { version = "0.1.19", features = ["net"] }
+tokio-test = "0.4.5"
+
+[build-dependencies]
+tonic-prost-build = "0.14.5"

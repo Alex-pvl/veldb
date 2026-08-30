@@ -1,0 +1,38 @@
+# /etc/systemd/system/veldb.service
+#
+#   sudo cp deploy/veldb.service /etc/systemd/system/
+#   sudo useradd --system --home /var/lib/veldb --create-home veldb
+#   sudo cp target/aarch64-unknown-linux-gnu/release/veldb /usr/local/bin/
+#   sudo systemctl enable --now veldb
+
+[Unit]
+Description=veldb — in-memory колоночная СУБД
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=veldb
+Group=veldb
+# --max-memory обязателен на Pi: без него при переполнении процесс убьёт
+# OOM-killer, и последние записи из WAL-буфера не доедут до диска.
+# Оставьте системе хотя бы 1 ГиБ сверх этого значения.
+ExecStart=/usr/local/bin/veldb \
+    --data /var/lib/veldb \
+    --http 0.0.0.0:8080 \
+    --grpc 0.0.0.0:8081 \
+    --durability buffered \
+    --max-memory 2GiB \
+    --snapshot-interval 300
+# SIGINT, а не SIGTERM: по нему veldb успевает записать финальный снапшот.
+KillSignal=SIGINT
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+StateDirectory=veldb
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

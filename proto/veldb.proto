@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package veldb;
+
+// Тот же набор операций, что и в REST: интерфейсы должны быть взаимозаменяемы,
+// иначе клиенты начинают выбирать протокол по набору возможностей, а не по вкусу.
+service Veldb {
+  rpc Query (QueryRequest) returns (QueryReply);
+  rpc Insert (InsertRequest) returns (InsertReply);
+  rpc Health (HealthRequest) returns (HealthReply);
+  rpc Schema (SchemaRequest) returns (SchemaReply);
+}
+
+message Vector { repeated float values = 1; }
+
+message Value {
+  oneof kind {
+    int64 i = 1;
+    double f = 2;
+    bool b = 3;
+    string s = 4;
+    Vector v = 5;
+  }
+}
+
+message Row { repeated Value values = 1; }
+
+message QueryRequest { string sql = 1; }
+
+message QueryReply {
+  repeated string columns = 1;
+  repeated string types = 2;
+  repeated Row rows = 3;
+  double elapsed_ms = 4;
+}
+
+message InsertRequest {
+  string table = 1;
+  repeated Row rows = 2;
+}
+
+message InsertReply { uint64 inserted = 1; }
+
+message HealthRequest {}
+
+message HealthReply {
+  string version = 1;
+  uint64 tables = 2;
+  uint64 rows = 3;
+  uint64 bytes_used = 4;
+  uint64 next_lsn = 5;
+  bool persistent = 6;
+}
+
+message SchemaRequest {}
+
+message ColumnInfo {
+  string name = 1;
+  string type = 2;
+}
+
+message TableInfo {
+  string name = 1;
+  uint64 rows = 2;
+  repeated ColumnInfo columns = 3;
+}
+
+message SchemaReply { repeated TableInfo tables = 1; }
